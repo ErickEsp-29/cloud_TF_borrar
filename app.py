@@ -214,7 +214,23 @@ def read_sql(query: str, params: Optional[Tuple] = None) -> Optional[pd.DataFram
         st.session_state.pop("db_conn", None)
         return None
  
+
+def _has_columns(df: pd.DataFrame | None, columns: list[str]) -> bool:
+    return isinstance(df, pd.DataFrame) and all(col in df.columns for col in columns)
  
+
+def _validate_supabase_schema(candidates: pd.DataFrame, locations: pd.DataFrame, votes: pd.DataFrame) -> tuple[bool, str]:
+    if candidates.empty or locations.empty or votes.empty:
+        return False, "Uno o más datasets están vacíos."
+    if not _has_columns(candidates, ["candidate_id", "candidate_name", "party_name", "party_symbol", "display_color"]):
+        return False, "La tabla de candidatos no contiene las columnas esperadas."
+    if not _has_columns(locations, ["location_id", "region", "province", "district", "total_actas", "actas_contabilizadas", "actas_pendientes", "velocidad_actas_hora"]):
+        return False, "La tabla de ubicaciones no contiene las columnas esperadas."
+    if not _has_columns(votes, ["location_id", "candidate_id", "valid_votes"]):
+        return False, "La tabla de votos no contiene las columnas esperadas."
+    return True, ""
+ 
+
 def insert_log(event_type: str, event_name: str, detail: str) -> None:
     conn = get_connection()
     if conn is None:
@@ -332,7 +348,7 @@ def joined_results(
                 "district",
             ]
         )
-    if "location_id" not in locations.columns or "location_id" not in votes.columns:
+    if not _has_columns(locations, ["location_id"]) or not _has_columns(votes, ["location_id", "candidate_id"]) or not _has_columns(candidates, ["candidate_id"]):
         return pd.DataFrame(
             columns=[
                 "location_id",
@@ -870,9 +886,12 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
  
  
 def page_resumen(candidates, locations, votes, db_connected: bool = False):
-    if not db_connected or locations.empty or candidates.empty or votes.empty:
+    schema_ok, schema_msg = _validate_supabase_schema(candidates, locations, votes)
+    if not db_connected or not schema_ok:
         db_error = st.session_state.get("db_conn_error", "")
         msg = "⚠️ No hay datos disponibles desde Supabase."
+        if schema_msg:
+            msg += f" {schema_msg}"
         if db_error:
             msg += f" Error: `{db_error}`"
         st.warning(msg)
@@ -961,8 +980,11 @@ def page_resumen(candidates, locations, votes, db_connected: bool = False):
  
  
 def page_resultados(candidates, locations, votes):
-    if locations.empty or candidates.empty or votes.empty:
-        st.warning("No hay datos disponibles para mostrar resultados. Verifica la conexión a Supabase.")
+    if not _has_columns(locations, ["region", "province", "district"]) or not _has_columns(locations, ["location_id"]):
+        st.warning("No hay datos geográficos completos para mostrar resultados. Verifica la conexión a Supabase.")
+        return
+    if not _has_columns(candidates, ["candidate_id"]) or not _has_columns(votes, ["location_id", "candidate_id"]):
+        st.warning("No hay datos de candidatos o votos completos para mostrar resultados. Verifica la conexión a Supabase.")
         return
 
     # ======================================================
@@ -1553,8 +1575,8 @@ def simulate_result(summary: pd.DataFrame, rural_intake: int, delay_hours: int) 
  
  
 def page_simulador(candidates, locations, votes):
-    if locations.empty or candidates.empty or votes.empty:
-        st.warning("No hay datos disponibles para simular escenarios. Verifica la conexión a Supabase.")
+    if not _has_columns(locations, ["location_id"]) or not _has_columns(candidates, ["candidate_id"]) or not _has_columns(votes, ["location_id", "candidate_id", "valid_votes"]):
+        st.warning("No hay datos completos para simular escenarios. Verifica la conexión a Supabase.")
         return
 
     data = joined_results(candidates, locations, votes)
@@ -1630,8 +1652,8 @@ def page_simulador(candidates, locations, votes):
  
  
 def page_reportes(candidates, locations, votes):
-    if locations.empty or candidates.empty or votes.empty:
-        st.warning("No hay datos disponibles para generar reportes. Verifica la conexión a Supabase.")
+    if not _has_columns(locations, ["location_id"]) or not _has_columns(candidates, ["candidate_id"]) or not _has_columns(votes, ["location_id", "candidate_id"]):
+        st.warning("No hay datos completos para generar reportes. Verifica la conexión a Supabase.")
         return
 
     st.markdown("## Reportes")
