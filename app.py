@@ -429,7 +429,61 @@ def general_metrics(locations: pd.DataFrame, summary: pd.DataFrame) -> dict:
 def format_int(value: float) -> str:
     return f"{int(round(value)):,}".replace(",", " ").replace(" ", ",")
  
- 
+
+def resumen_insights(metrics: dict, summary: pd.DataFrame) -> list[str]:
+    insights: list[str] = []
+    if metrics["total_actas"] == 0:
+        return ["⚠️ No hay actas registradas para generar un diagnóstico."]
+
+    if metrics["progress"] < 35:
+        insights.append(
+            "⏳ El avance de actas es bajo; el resultado parcial puede variar cuando se contabilice el resto."
+        )
+    elif metrics["progress"] < 75:
+        insights.append(
+            "⏳ El conteo está en curso y aún puede modificarse según las actas pendientes."
+        )
+    else:
+        insights.append(
+            "⏳ El conteo está avanzado; el resultado parcial es más representativo del escenario actual."
+        )
+
+    if metrics["critical"] > 0:
+        insights.append(
+            f"📍 Hay {metrics['critical']} región(es) con velocidad de procesamiento baja respecto al promedio."
+        )
+    else:
+        insights.append(
+            "📍 No hay regiones críticas por velocidad en el corte actual."
+        )
+
+    if len(summary) > 1:
+        leader_diff = float(summary.iloc[0]["percentage"] - summary.iloc[1]["percentage"])
+        if leader_diff < 3:
+            insights.append(
+                "🔎 La diferencia entre el primer y segundo lugar es estrecha; conviene seguir el avance de actas pendientes."
+            )
+        else:
+            insights.append(
+                "🔎 El margen actual es amplio y el líder parcial tiene una ventaja clara."
+            )
+    else:
+        insights.append(
+            "🔎 La información disponible es limitada para evaluar la competitividad entre candidatos."
+        )
+
+    if metrics["progress"] < 90 or metrics["critical"] > 0:
+        insights.append(
+            "💡 Usa el simulador para explorar cómo las actas pendientes o los retrasos podrían cambiar el resultado."
+        )
+    else:
+        insights.append(
+            "💡 El simulador sigue siendo útil para comparar escenarios aunque el conteo actual es estable."
+        )
+
+    return insights
+
+
 def render_header(db_connected: bool) -> None:
     now_text = datetime.now().strftime("%d/%m/%Y %I:%M %p").lower().replace("am", "a. m.").replace("pm", "p. m.")
     status = "Conectado a Supabase" if db_connected else "Sin conexión a Supabase"
@@ -964,9 +1018,8 @@ def page_resumen(candidates, locations, votes, db_connected: bool = False):
                 f"de {format_int(metrics['total_actas'])} ({metrics['progress']:.1f}%)"
             )
         st.divider()
-        st.write("⏳ Las regiones con menor velocidad pueden modificar la lectura parcial.")
-        st.write("📍 El análisis geográfico ayuda a ubicar zonas con procesamiento lento.")
-        st.write("🔎 El simulador permite evaluar escenarios sin usar inteligencia artificial.")
+        for insight in resumen_insights(metrics, summary):
+            st.write(insight)
         fuente = "Supabase PostgreSQL" if db_connected else "Sin datos disponibles"
         st.caption(f"Fuente: {fuente}")
         st.markdown("</div>", unsafe_allow_html=True)
