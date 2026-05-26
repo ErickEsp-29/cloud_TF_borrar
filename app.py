@@ -130,78 +130,6 @@ st.markdown(
 )
  
  
-# ==========================================================
-# Datos demo de respaldo si la BD aún no está conectada
-# ==========================================================
-CANDIDATES_DEMO = pd.DataFrame(
-    [
-        (1, "Ana Kori", "Fuerza Popular", "K", "#1F66B1"),
-        (2, "José Paredes", "Juntos por el Perú", "JP", "#2F7CC0"),
-        (3, "Renato Vargas", "Renovación Popular", "R", "#7DBAE0"),
-        (4, "Alonso Medina", "Alianza Popular", "AP", "#88C3E8"),
-        (5, "Óscar Rivas", "Obras por el Perú", "OBRAS", "#9CCEEB"),
-        (6, "Miguel Salas", "País para Todos", "PPT", "#73B3D7"),
-        (7, "Raúl Torres", "Acción Popular", "APOP", "#60A3CB"),
-    ],
-    columns=["candidate_id", "candidate_name", "party_name", "party_symbol", "display_color"],
-)
- 
-LOCATIONS_DEMO = pd.DataFrame(
-    [
-        (1, "Lima", "Lima", "Lima", -12.0464, -77.0428, 30140, 30140, 0, 0, 920.0),
-        (2, "La Libertad", "Trujillo", "Trujillo", -8.1116, -79.0288, 7900, 7900, 0, 0, 310.0),
-        (3, "Piura", "Piura", "Piura", -5.1945, -80.6328, 6700, 6700, 0, 0, 285.0),
-        (4, "Arequipa", "Arequipa", "Arequipa", -16.4090, -71.5375, 7600, 7600, 0, 0, 340.0),
-        (5, "Cusco", "Cusco", "Cusco", -13.5319, -71.9675, 5200, 5200, 0, 0, 160.0),
-        (6, "Puno", "Puno", "Puno", -15.8402, -70.0219, 4800, 4800, 0, 0, 95.0),
-        (7, "Junín", "Huancayo", "Huancayo", -12.0651, -75.2049, 5400, 5400, 0, 0, 230.0),
-        (8, "Huancavelica", "Huancavelica", "Huancavelica", -12.7864, -74.9764, 3200, 3200, 0, 0, 82.0),
-        (9, "Amazonas", "Chachapoyas", "Chachapoyas", -6.2317, -77.8690, 2410, 2410, 0, 0, 76.0),
-        (10, "Ucayali", "Coronel Portillo", "Callería", -8.3791, -74.5539, 6873, 6873, 0, 0, 88.0),
-    ],
-    columns=[
-        "location_id",
-        "region",
-        "province",
-        "district",
-        "latitude",
-        "longitude",
-        "total_actas",
-        "actas_contabilizadas",
-        "actas_pendientes",
-        "actas_observadas",
-        "velocidad_actas_hora",
-    ],
-)
- 
-LOCATIONS_DEMO = pd.DataFrame(
-    [
-        (1, "Lima Metropolitana", "Lima", "Lima", -12.0464, -77.0428, 30140, 24610, 5530, 215, 1025.4),
-        (2, "La Libertad", "Trujillo", "Trujillo", -8.1116, -79.0288, 7900, 6125, 1775, 68, 255.2),
-        (3, "Piura", "Piura", "Piura", -5.1945, -80.6328, 6700, 4925, 1775, 74, 205.2),
-        (4, "Arequipa", "Arequipa", "Arequipa", -16.4090, -71.5375, 7600, 6420, 1180, 58, 267.5),
-        (5, "Cajamarca", "Cajamarca", "Cajamarca", -7.1617, -78.5128, 5900, 3920, 1980, 92, 163.3),
-        (6, "Cusco", "Cusco", "Cusco", -13.5319, -71.9675, 5200, 3650, 1550, 80, 152.1),
-        (7, "Junin", "Huancayo", "Huancayo", -12.0651, -75.2049, 5400, 4310, 1090, 47, 179.6),
-        (8, "Lambayeque", "Chiclayo", "Chiclayo", -6.7714, -79.8409, 5000, 4210, 790, 35, 175.4),
-        (9, "Ancash", "Santa", "Chimbote", -9.0745, -78.5936, 5100, 3320, 1780, 83, 138.3),
-        (10, "Puno", "Puno", "Puno", -15.8402, -70.0219, 4800, 2850, 1950, 96, 118.8),
-    ],
-    columns=[
-        "location_id",
-        "region",
-        "province",
-        "district",
-        "latitude",
-        "longitude",
-        "total_actas",
-        "actas_contabilizadas",
-        "actas_pendientes",
-        "actas_observadas",
-        "velocidad_actas_hora",
-    ],
-)
- 
 BASE_SHARE = np.array([28.5, 18.7, 16.2, 13.4, 8.9, 6.3, 4.5], dtype=float)
 BASE_SHARE = BASE_SHARE / BASE_SHARE.sum()
  
@@ -222,32 +150,6 @@ def _region_modifier(region: str) -> np.ndarray:
     arr = np.array(modifiers.get(region, [1] * len(BASE_SHARE)), dtype=float)
     share = BASE_SHARE * arr
     return share / share.sum()
- 
- 
-def build_demo_votes() -> pd.DataFrame:
-    rows = []
-    for _, loc in LOCATIONS_DEMO.iterrows():
-        total_valid_votes = int(loc["actas_contabilizadas"] * 320)
-        shares = _region_modifier(loc["region"])
-        votes = np.floor(total_valid_votes * shares).astype(int)
-        votes[0] += total_valid_votes - int(votes.sum())
-        for candidate_id, valid_votes in zip(CANDIDATES_DEMO["candidate_id"], votes):
-            rows.append((loc["location_id"], candidate_id, int(valid_votes)))
-    return pd.DataFrame(rows, columns=["location_id", "candidate_id", "valid_votes"])
- 
- 
-LOGS_DEMO = pd.DataFrame(
-    [
-        (datetime.now() - timedelta(minutes=5), "Actualización", "Carga de dataset", "Dataset actas_2026_05_24.csv cargado correctamente"),
-        (datetime.now() - timedelta(minutes=10), "Procesamiento", "Cálculo de métricas", "Métricas actualizadas para todas las regiones"),
-        (datetime.now() - timedelta(minutes=20), "Simulación", "Escenario ejecutado", "Escenario: ingreso de actas rurales al 50%"),
-        (datetime.now() - timedelta(minutes=35), "Actualización", "Actualización de actas", "Se actualizaron 90,223 actas en la base de datos"),
-        (datetime.now() - timedelta(minutes=50), "Sistema", "Inicio de sesión", "Usuario: admin"),
-        (datetime.now() - timedelta(minutes=70), "Sistema", "Conexión a BD", "Conexión a Supabase exitosa"),
-        (datetime.now() - timedelta(minutes=90), "Procesamiento", "Limpieza de datos", "Datos validados y transformados correctamente"),
-    ],
-    columns=["event_time", "event_type", "event_name", "detail"],
-)
  
  
 # ==========================================================
@@ -336,8 +238,7 @@ def insert_log(event_type: str, event_name: str, detail: str) -> None:
  
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, bool]:
     """
-    Carga datos desde Supabase. Si hay error usa datos demo.
-    Usa session_state como caché liviano (60s TTL) para no reconectar en cada rerun.
+    Carga datos desde Supabase. Usa session_state como caché liviano (60s TTL) para no reconectar en cada rerun.
     """
     cache_key = "data_cache"
     cache_ts_key = "data_cache_ts"
@@ -364,10 +265,10 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame,
     )
  
     if candidates is None or locations is None or votes is None or candidates.empty or locations.empty or votes.empty:
-        result = (CANDIDATES_DEMO.copy(), LOCATIONS_DEMO.copy(), build_demo_votes(), LOGS_DEMO.copy(), False)
+        result = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), False)
     else:
-        if logs is None or logs.empty:
-            logs = LOGS_DEMO.copy()
+        if logs is None:
+            logs = pd.DataFrame(columns=["event_time", "event_type", "event_name", "detail"])
         result = (candidates, locations, votes, logs, True)
  
     st.session_state[cache_key] = result
@@ -480,7 +381,7 @@ def format_int(value: float) -> str:
  
 def render_header(db_connected: bool) -> None:
     now_text = datetime.now().strftime("%d/%m/%Y %I:%M %p").lower().replace("am", "a. m.").replace("pm", "p. m.")
-    status = "Conectado a Supabase" if db_connected else "Modo demo: sin conexión a Supabase"
+    status = "Conectado a Supabase" if db_connected else "Sin conexión a Supabase"
     st.markdown(
         f"""
         <div class="top-card">
@@ -939,7 +840,7 @@ def page_resumen(candidates, locations, votes, db_connected: bool = False):
     # Aviso de estado de datos -----------------------------------------------
     if not db_connected:
         db_error = st.session_state.get("db_conn_error", "")
-        msg = "⚠️ Mostrando **datos de demostración** (sin conexión a Supabase)."
+        msg = "⚠️ No hay conexión activa a Supabase."
         if db_error:
             msg += f" Error: `{db_error}`"
         st.warning(msg)
@@ -1001,12 +902,12 @@ def page_resumen(candidates, locations, votes, db_connected: bool = False):
         st.write("⏳ Las regiones con menor velocidad pueden modificar la lectura parcial.")
         st.write("📍 El análisis geográfico ayuda a ubicar zonas con procesamiento lento.")
         st.write("🔎 El simulador permite evaluar escenarios sin usar inteligencia artificial.")
-        fuente = "Supabase PostgreSQL" if db_connected else "datos demo"
+        fuente = "Supabase PostgreSQL" if db_connected else "Sin datos disponibles"
         st.caption(f"Fuente: {fuente}")
         st.markdown("</div>", unsafe_allow_html=True)
  
     st.write("")
-    fuente_nota = "Supabase PostgreSQL (datos reales)" if db_connected else "dataset público/simulado con estructura ONPE"
+    fuente_nota = "Supabase PostgreSQL (datos reales)" if db_connected else "Sin datos disponibles"
     st.markdown(
         f"<div class='small-note'>Total de actas: <b>{format_int(metrics['total_actas'])}</b>. Fuente: {fuente_nota}.</div>",
         unsafe_allow_html=True,
@@ -1735,7 +1636,7 @@ def page_acerca(db_connected: bool):
         language="text",
     )
     st.markdown("### Estado")
-    st.success("Conexión activa a Supabase" if db_connected else "La app está usando datos demo hasta configurar Supabase")
+    st.success("Conexión activa a Supabase" if db_connected else "No conectado a Supabase. Configura secrets para usar datos reales.")
  
  
 # ==========================================================
