@@ -280,6 +280,10 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame,
 # Transformaciones
 # ==========================================================
 def apply_filters(locations: pd.DataFrame) -> pd.DataFrame:
+    if locations.empty or "region" not in locations.columns:
+        st.warning("No hay datos de ubicación disponibles para aplicar filtros.")
+        return locations
+
     st.markdown("#### Filtros")
     c1, c2, c3, c4, c5 = st.columns([1, 1.2, 1.2, 1.2, 1.1])
  
@@ -313,6 +317,37 @@ def apply_filters(locations: pd.DataFrame) -> pd.DataFrame:
 def joined_results(
     candidates: pd.DataFrame, locations: pd.DataFrame, votes: pd.DataFrame
 ) -> pd.DataFrame:
+    if locations.empty or votes.empty or candidates.empty:
+        return pd.DataFrame(
+            columns=[
+                "location_id",
+                "candidate_id",
+                "valid_votes",
+                "candidate_name",
+                "party_name",
+                "party_symbol",
+                "display_color",
+                "region",
+                "province",
+                "district",
+            ]
+        )
+    if "location_id" not in locations.columns or "location_id" not in votes.columns:
+        return pd.DataFrame(
+            columns=[
+                "location_id",
+                "candidate_id",
+                "valid_votes",
+                "candidate_name",
+                "party_name",
+                "party_symbol",
+                "display_color",
+                "region",
+                "province",
+                "district",
+            ]
+        )
+
     # Primero se toman solo las ubicaciones que quedaron después de aplicar filtros
     location_ids = locations["location_id"].dropna().unique()
  
@@ -619,6 +654,9 @@ def _top_vote_labels(locations: pd.DataFrame, candidates: pd.DataFrame | None, v
 def prepare_mapa_dataframe(
     locations: pd.DataFrame, candidates: pd.DataFrame | None = None, votes: pd.DataFrame | None = None
 ) -> pd.DataFrame:
+    if locations.empty or "region" not in locations.columns:
+        return pd.DataFrame()
+
     df = locations.copy()
     df["region_map"] = df["region"].map(_clean_department)
     df = df[df["region_map"].isin(TOP_ELECTORAL_DEPARTMENTS)].copy()
@@ -832,6 +870,14 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
  
  
 def page_resumen(candidates, locations, votes, db_connected: bool = False):
+    if not db_connected or locations.empty or candidates.empty or votes.empty:
+        db_error = st.session_state.get("db_conn_error", "")
+        msg = "⚠️ No hay datos disponibles desde Supabase."
+        if db_error:
+            msg += f" Error: `{db_error}`"
+        st.warning(msg)
+        return
+
     filtered_locations = apply_filters(locations)
     data = joined_results(candidates, filtered_locations, votes)
     summary = candidate_summary(data)
@@ -915,6 +961,10 @@ def page_resumen(candidates, locations, votes, db_connected: bool = False):
  
  
 def page_resultados(candidates, locations, votes):
+    if locations.empty or candidates.empty or votes.empty:
+        st.warning("No hay datos disponibles para mostrar resultados. Verifica la conexión a Supabase.")
+        return
+
     # ======================================================
     # Estilos visuales propios del módulo de resultados
     # ======================================================
@@ -1412,7 +1462,11 @@ def page_resultados(candidates, locations, votes):
 def page_mapa(locations, candidates, votes):
     st.markdown("## Analisis territorial del conteo")
     st.caption("Mapa coropletico de los 10 departamentos con mayor carga electoral")
- 
+
+    if locations.empty or candidates.empty or votes.empty:
+        st.warning("No hay datos disponibles para mostrar el mapa. Verifica la conexión a Supabase.")
+        return
+
     map_df = render_mapa(locations, candidates, votes)
     if map_df.empty:
         return
@@ -1499,6 +1553,10 @@ def simulate_result(summary: pd.DataFrame, rural_intake: int, delay_hours: int) 
  
  
 def page_simulador(candidates, locations, votes):
+    if locations.empty or candidates.empty or votes.empty:
+        st.warning("No hay datos disponibles para simular escenarios. Verifica la conexión a Supabase.")
+        return
+
     data = joined_results(candidates, locations, votes)
     summary = candidate_summary(data)
  
@@ -1572,6 +1630,10 @@ def page_simulador(candidates, locations, votes):
  
  
 def page_reportes(candidates, locations, votes):
+    if locations.empty or candidates.empty or votes.empty:
+        st.warning("No hay datos disponibles para generar reportes. Verifica la conexión a Supabase.")
+        return
+
     st.markdown("## Reportes")
     st.caption("Exportación básica de resultados y avance de actas")
  
