@@ -1,21 +1,21 @@
 from __future__ import annotations
-
+ 
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 import unicodedata
-
+ 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-
+ 
 try:
     import psycopg2
 except Exception:
     psycopg2 = None
-
-
+ 
+ 
 # ==========================================================
 # Configuración general
 # ==========================================================
@@ -25,13 +25,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
+ 
 PRIMARY = "#003C7D"
 SECONDARY = "#0B5CAB"
 LIGHT_BLUE = "#EAF4FF"
 TEXT_DARK = "#1F2937"
-
-
+ 
+ 
 # ==========================================================
 # Estilos tipo dashboard ONPE
 # ==========================================================
@@ -128,8 +128,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
+ 
+ 
 # ==========================================================
 # Datos demo de respaldo si la BD aún no está conectada
 # ==========================================================
@@ -145,7 +145,7 @@ CANDIDATES_DEMO = pd.DataFrame(
     ],
     columns=["candidate_id", "candidate_name", "party_name", "party_symbol", "display_color"],
 )
-
+ 
 LOCATIONS_DEMO = pd.DataFrame(
     [
         (1, "Lima", "Lima", "Lima", -12.0464, -77.0428, 30140, 30140, 0, 0, 920.0),
@@ -173,7 +173,7 @@ LOCATIONS_DEMO = pd.DataFrame(
         "velocidad_actas_hora",
     ],
 )
-
+ 
 LOCATIONS_DEMO = pd.DataFrame(
     [
         (1, "Lima Metropolitana", "Lima", "Lima", -12.0464, -77.0428, 30140, 24610, 5530, 215, 1025.4),
@@ -201,11 +201,11 @@ LOCATIONS_DEMO = pd.DataFrame(
         "velocidad_actas_hora",
     ],
 )
-
+ 
 BASE_SHARE = np.array([28.5, 18.7, 16.2, 13.4, 8.9, 6.3, 4.5], dtype=float)
 BASE_SHARE = BASE_SHARE / BASE_SHARE.sum()
-
-
+ 
+ 
 def _region_modifier(region: str) -> np.ndarray:
     modifiers = {
         "Lima": [1.15, 1.05, 1.00, 0.92, 0.88, 0.95, 0.90],
@@ -222,8 +222,8 @@ def _region_modifier(region: str) -> np.ndarray:
     arr = np.array(modifiers.get(region, [1] * len(BASE_SHARE)), dtype=float)
     share = BASE_SHARE * arr
     return share / share.sum()
-
-
+ 
+ 
 def build_demo_votes() -> pd.DataFrame:
     rows = []
     for _, loc in LOCATIONS_DEMO.iterrows():
@@ -234,8 +234,8 @@ def build_demo_votes() -> pd.DataFrame:
         for candidate_id, valid_votes in zip(CANDIDATES_DEMO["candidate_id"], votes):
             rows.append((loc["location_id"], candidate_id, int(valid_votes)))
     return pd.DataFrame(rows, columns=["location_id", "candidate_id", "valid_votes"])
-
-
+ 
+ 
 LOGS_DEMO = pd.DataFrame(
     [
         (datetime.now() - timedelta(minutes=5), "Actualización", "Carga de dataset", "Dataset actas_2026_05_24.csv cargado correctamente"),
@@ -248,40 +248,71 @@ LOGS_DEMO = pd.DataFrame(
     ],
     columns=["event_time", "event_type", "event_name", "detail"],
 )
-
-
+ 
+ 
 # ==========================================================
 # Conexión a Supabase
 # ==========================================================
-@st.cache_resource(show_spinner=False)
-def get_connection():
+def _build_connection():
+    """Crea una nueva conexión a Supabase. Sin caché para poder reconectar."""
+    if psycopg2 is None:
+        return None, "psycopg2 no está instalado"
     try:
-        if psycopg2 is None:
-            return None
         postgres = st.secrets["postgres"]
-        return psycopg2.connect(
+    except Exception:
+        return None, "No se encontró la sección [postgres] en secrets.toml"
+    try:
+        conn = psycopg2.connect(
             user=postgres["USER"],
             password=postgres["PASSWORD"],
             host=postgres["HOST"],
             port=postgres.get("PORT", "5432"),
             dbname=postgres.get("DBNAME", "postgres"),
             sslmode="require",
+            connect_timeout=10,
         )
-    except Exception:
-        return None
-
-
+        return conn, None
+    except Exception as e:
+        return None, str(e)
+ 
+ 
+def get_connection():
+    """Retorna conexión activa; reconecta si fue cerrada por timeout."""
+    if "db_conn" not in st.session_state or st.session_state["db_conn"] is None:
+        conn, err = _build_connection()
+        st.session_state["db_conn"] = conn
+        st.session_state["db_conn_error"] = err
+    else:
+        conn = st.session_state["db_conn"]
+        # Verifica que la conexión sigue viva
+        try:
+            conn.isolation_level  # propiedad que lanza si está cerrada
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception:
+            conn, err = _build_connection()
+            st.session_state["db_conn"] = conn
+            st.session_state["db_conn_error"] = err
+    return st.session_state.get("db_conn")
+ 
+ 
 def read_sql(query: str, params: Optional[Tuple] = None) -> Optional[pd.DataFrame]:
     conn = get_connection()
     if conn is None:
         return None
     try:
-        return pd.read_sql_query(query, conn, params=params)
+        df = pd.read_sql_query(query, conn, params=params)
+        return df
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # Forzar reconexión en el próximo intento
+        st.session_state.pop("db_conn", None)
         return None
-
-
+ 
+ 
 def insert_log(event_type: str, event_name: str, detail: str) -> None:
     conn = get_connection()
     if conn is None:
@@ -297,11 +328,29 @@ def insert_log(event_type: str, event_name: str, detail: str) -> None:
             )
         conn.commit()
     except Exception:
-        conn.rollback()
-
-
-@st.cache_data(ttl=60, show_spinner=False)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+ 
+ 
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, bool]:
+    """
+    Carga datos desde Supabase. Si hay error usa datos demo.
+    Usa session_state como caché liviano (60s TTL) para no reconectar en cada rerun.
+    """
+    cache_key = "data_cache"
+    cache_ts_key = "data_cache_ts"
+    ttl = 60  # segundos
+ 
+    now = datetime.now().timestamp()
+    if (
+        cache_key in st.session_state
+        and cache_ts_key in st.session_state
+        and (now - st.session_state[cache_ts_key]) < ttl
+    ):
+        return st.session_state[cache_key]
+ 
     candidates = read_sql("SELECT * FROM candidates ORDER BY candidate_id")
     locations = read_sql("SELECT * FROM locations ORDER BY region, province, district")
     votes = read_sql("SELECT location_id, candidate_id, valid_votes FROM vote_results")
@@ -313,23 +362,26 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame,
         LIMIT 50
         """
     )
-
+ 
     if candidates is None or locations is None or votes is None or candidates.empty or locations.empty or votes.empty:
-        return CANDIDATES_DEMO.copy(), LOCATIONS_DEMO.copy(), build_demo_votes(), LOGS_DEMO.copy(), False
-
-    if logs is None or logs.empty:
-        logs = LOGS_DEMO.copy()
-
-    return candidates, locations, votes, logs, True
-
-
+        result = (CANDIDATES_DEMO.copy(), LOCATIONS_DEMO.copy(), build_demo_votes(), LOGS_DEMO.copy(), False)
+    else:
+        if logs is None or logs.empty:
+            logs = LOGS_DEMO.copy()
+        result = (candidates, locations, votes, logs, True)
+ 
+    st.session_state[cache_key] = result
+    st.session_state[cache_ts_key] = now
+    return result
+ 
+ 
 # ==========================================================
 # Transformaciones
 # ==========================================================
 def apply_filters(locations: pd.DataFrame) -> pd.DataFrame:
     st.markdown("#### Filtros")
     c1, c2, c3, c4, c5 = st.columns([1, 1.2, 1.2, 1.2, 1.1])
-
+ 
     with c1:
         country = st.selectbox("País", ["Perú"], index=0)
     with c2:
@@ -345,7 +397,7 @@ def apply_filters(locations: pd.DataFrame) -> pd.DataFrame:
         district = st.selectbox("Distrito", districts)
     with c5:
         period = st.selectbox("Periodo", ["Total", "Última hora", "Últimas 6 horas"])
-
+ 
     filtered = locations.copy()
     if region != "Todas":
         filtered = filtered[filtered["region"] == region]
@@ -353,19 +405,19 @@ def apply_filters(locations: pd.DataFrame) -> pd.DataFrame:
         filtered = filtered[filtered["province"] == province]
     if district != "Todos":
         filtered = filtered[filtered["district"] == district]
-
+ 
     return filtered
-
-
+ 
+ 
 def joined_results(
     candidates: pd.DataFrame, locations: pd.DataFrame, votes: pd.DataFrame
 ) -> pd.DataFrame:
     # Primero se toman solo las ubicaciones que quedaron después de aplicar filtros
     location_ids = locations["location_id"].dropna().unique()
-
+ 
     # Luego se filtran los votos para quedarse solo con esas ubicaciones
     filtered_votes = votes[votes["location_id"].isin(location_ids)].copy()
-
+ 
     # Finalmente se unen candidatos + ubicación geográfica
     data = filtered_votes.merge(
         candidates,
@@ -376,10 +428,10 @@ def joined_results(
         on="location_id",
         how="inner"
     )
-
+ 
     return data
-
-
+ 
+ 
 def candidate_summary(data: pd.DataFrame) -> pd.DataFrame:
     summary = (
         data.groupby(["candidate_id", "candidate_name", "party_name", "party_symbol", "display_color"], as_index=False)[
@@ -391,8 +443,8 @@ def candidate_summary(data: pd.DataFrame) -> pd.DataFrame:
     total_votes = summary["valid_votes"].sum()
     summary["percentage"] = np.where(total_votes > 0, summary["valid_votes"] / total_votes * 100, 0)
     return summary
-
-
+ 
+ 
 def general_metrics(locations: pd.DataFrame, summary: pd.DataFrame) -> dict:
     total_actas = int(locations["total_actas"].sum())
     counted = int(locations["actas_contabilizadas"].sum())
@@ -402,13 +454,13 @@ def general_metrics(locations: pd.DataFrame, summary: pd.DataFrame) -> dict:
     global_speed = float(locations["velocidad_actas_hora"].sum()) if not locations.empty else 0
     slow_threshold = avg_speed * 0.70
     critical = int((locations["velocidad_actas_hora"] < slow_threshold).sum()) if avg_speed > 0 else 0
-
+ 
     if len(summary) >= 2:
         diff = float(summary.iloc[0]["percentage"] - summary.iloc[1]["percentage"])
     else:
         diff = 0
     stability = min(99, max(55, 70 + diff * 1.6))
-
+ 
     return {
         "total_actas": total_actas,
         "counted": counted,
@@ -420,12 +472,12 @@ def general_metrics(locations: pd.DataFrame, summary: pd.DataFrame) -> dict:
         "stability": stability,
         "slow_threshold": slow_threshold,
     }
-
-
+ 
+ 
 def format_int(value: float) -> str:
     return f"{int(round(value)):,}".replace(",", " ").replace(" ", ",")
-
-
+ 
+ 
 def render_header(db_connected: bool) -> None:
     now_text = datetime.now().strftime("%d/%m/%Y %I:%M %p").lower().replace("am", "a. m.").replace("pm", "p. m.")
     status = "Conectado a Supabase" if db_connected else "Modo demo: sin conexión a Supabase"
@@ -451,8 +503,8 @@ def render_header(db_connected: bool) -> None:
         unsafe_allow_html=True,
     )
     st.write("")
-
-
+ 
+ 
 def metric_card(title: str, value: str, help_text: str, icon: str) -> None:
     st.markdown(
         f"""
@@ -467,8 +519,8 @@ def metric_card(title: str, value: str, help_text: str, icon: str) -> None:
         """,
         unsafe_allow_html=True,
     )
-
-
+ 
+ 
 def make_bar_chart(summary: pd.DataFrame) -> go.Figure:
     chart = summary.copy()
     chart["label"] = chart["party_symbol"] + "<br>" + chart["party_name"]
@@ -494,8 +546,8 @@ def make_bar_chart(summary: pd.DataFrame) -> go.Figure:
         font=dict(color=TEXT_DARK),
     )
     return fig
-
-
+ 
+ 
 def make_votes_chart(summary: pd.DataFrame) -> go.Figure:
     chart = summary.copy()
     fig = px.bar(
@@ -518,8 +570,8 @@ def make_votes_chart(summary: pd.DataFrame) -> go.Figure:
     )
     fig.update_yaxes(autorange="reversed")
     return fig
-
-
+ 
+ 
 def make_map(locations: pd.DataFrame, metrics: dict) -> go.Figure:
     map_df = locations.copy()
     threshold = metrics["slow_threshold"]
@@ -565,8 +617,8 @@ def make_map(locations: pd.DataFrame, metrics: dict) -> go.Figure:
         legend_title_text="Nivel de avance",
     )
     return fig
-
-
+ 
+ 
 TOP_ELECTORAL_DEPARTMENTS = [
     "Lima Metropolitana",
     "La Libertad",
@@ -579,7 +631,7 @@ TOP_ELECTORAL_DEPARTMENTS = [
     "Ancash",
     "Puno",
 ]
-
+ 
 DEPARTMENT_ALIASES = {
     "lima": "Lima Metropolitana",
     "lima metropolitana": "Lima Metropolitana",
@@ -593,7 +645,7 @@ DEPARTMENT_ALIASES = {
     "ancash": "Ancash",
     "puno": "Puno",
 }
-
+ 
 DEPARTMENT_GEOJSON = {
     "type": "FeatureCollection",
     "features": [
@@ -609,19 +661,19 @@ DEPARTMENT_GEOJSON = {
         {"type": "Feature", "id": "Puno", "properties": {"name": "Puno"}, "geometry": {"type": "Polygon", "coordinates": [[[-71.85, -13.00], [-68.70, -13.15], [-68.45, -17.30], [-70.20, -17.55], [-71.75, -16.05], [-71.85, -13.00]]]}},
     ],
 }
-
-
+ 
+ 
 def _clean_department(value: object) -> str:
     text = "" if pd.isna(value) else str(value).strip()
     normalized = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii").lower()
     return DEPARTMENT_ALIASES.get(normalized, text)
-
-
+ 
+ 
 def _elapsed_hours(locations: pd.DataFrame) -> float:
     for column in ("tiempo_transcurrido_horas", "horas_transcurridas", "elapsed_hours"):
         if column in locations.columns and pd.to_numeric(locations[column], errors="coerce").notna().any():
             return max(float(pd.to_numeric(locations[column], errors="coerce").median()), 1.0)
-
+ 
     start_columns = [c for c in ("fecha_inicio_conteo", "started_at", "created_at") if c in locations.columns]
     end_columns = [c for c in ("fecha_actualizacion", "updated_at", "processed_at") if c in locations.columns]
     if start_columns:
@@ -629,21 +681,21 @@ def _elapsed_hours(locations: pd.DataFrame) -> float:
         end = pd.to_datetime(locations[end_columns[0]], errors="coerce").max() if end_columns else datetime.now()
         if pd.notna(start) and pd.notna(end):
             return max((end - start).total_seconds() / 3600, 1.0)
-
+ 
     if "velocidad_actas_hora" in locations.columns:
         speed = pd.to_numeric(locations["velocidad_actas_hora"], errors="coerce").replace(0, np.nan)
         counted = pd.to_numeric(locations["actas_contabilizadas"], errors="coerce")
         elapsed = (counted / speed).replace([np.inf, -np.inf], np.nan).median()
         if pd.notna(elapsed):
             return max(float(elapsed), 1.0)
-
+ 
     return 24.0
-
-
+ 
+ 
 def _top_vote_labels(locations: pd.DataFrame, candidates: pd.DataFrame | None, votes: pd.DataFrame | None) -> pd.DataFrame:
     if candidates is None or votes is None or candidates.empty or votes.empty:
         return pd.DataFrame(columns=["region_map", "votos_principales"])
-
+ 
     vote_df = votes.merge(locations[["location_id", "region_map"]], on="location_id", how="inner")
     vote_df = vote_df.merge(candidates[["candidate_id", "candidate_name", "party_name"]], on="candidate_id", how="left")
     grouped = (
@@ -651,7 +703,7 @@ def _top_vote_labels(locations: pd.DataFrame, candidates: pd.DataFrame | None, v
         .sum()
         .sort_values(["region_map", "valid_votes"], ascending=[True, False])
     )
-
+ 
     labels = []
     for region, group in grouped.groupby("region_map"):
         top = group.head(2)
@@ -661,8 +713,8 @@ def _top_vote_labels(locations: pd.DataFrame, candidates: pd.DataFrame | None, v
         )
         labels.append({"region_map": region, "votos_principales": label})
     return pd.DataFrame(labels)
-
-
+ 
+ 
 def prepare_mapa_dataframe(
     locations: pd.DataFrame, candidates: pd.DataFrame | None = None, votes: pd.DataFrame | None = None
 ) -> pd.DataFrame:
@@ -671,7 +723,7 @@ def prepare_mapa_dataframe(
     df = df[df["region_map"].isin(TOP_ELECTORAL_DEPARTMENTS)].copy()
     if df.empty:
         return df
-
+ 
     elapsed_hours = _elapsed_hours(df)
     grouped = (
         df.groupby("region_map", as_index=False)
@@ -703,14 +755,14 @@ def prepare_mapa_dataframe(
         ["Alta carga pendiente", "Bajo el promedio"],
         default="Rendimiento esperado",
     )
-
+ 
     vote_labels = _top_vote_labels(df[["location_id", "region_map"]], candidates, votes)
     grouped = grouped.merge(vote_labels, on="region_map", how="left")
     grouped["votos_principales"] = grouped["votos_principales"].fillna("Sin votos disponibles")
     grouped["region_map"] = pd.Categorical(grouped["region_map"], TOP_ELECTORAL_DEPARTMENTS, ordered=True)
     return grouped.sort_values("region_map").reset_index(drop=True)
-
-
+ 
+ 
 def make_choropleth_map(map_df: pd.DataFrame, metric: str) -> go.Figure:
     metric_config = {
         "% de avance": ("avance_pct", "% avance", [[0, "#F05A5A"], [0.5, "#F4C64E"], [1, "#2E8B57"]], [0, 100]),
@@ -719,7 +771,7 @@ def make_choropleth_map(map_df: pd.DataFrame, metric: str) -> go.Figure:
     }
     column, title, colorscale, value_range = metric_config[metric]
     zmin, zmax = value_range if value_range else (None, None)
-
+ 
     fig = go.Figure()
     fig.add_trace(
         go.Choroplethmapbox(
@@ -756,7 +808,7 @@ def make_choropleth_map(map_df: pd.DataFrame, metric: str) -> go.Figure:
             ),
         )
     )
-
+ 
     anomaly_df = map_df[map_df["bajo_promedio"] | map_df["menor_rendimiento"]]
     if not anomaly_df.empty:
         fig.add_trace(
@@ -772,7 +824,7 @@ def make_choropleth_map(map_df: pd.DataFrame, metric: str) -> go.Figure:
                 hoverinfo="skip",
             )
         )
-
+ 
     fig.add_trace(
         go.Scattermapbox(
             lat=map_df["latitude"],
@@ -795,14 +847,14 @@ def make_choropleth_map(map_df: pd.DataFrame, metric: str) -> go.Figure:
         showlegend=False,
     )
     return fig
-
-
+ 
+ 
 def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None, votes: pd.DataFrame | None = None) -> pd.DataFrame:
     map_df = prepare_mapa_dataframe(locations, candidates, votes)
     if map_df.empty:
         st.warning("No hay datos para los 10 departamentos de mayor carga electoral.")
         return map_df
-
+ 
     metric = st.radio(
         "Metrica del mapa",
         ["% de avance", "Velocidad de procesamiento", "Anomalias"],
@@ -810,7 +862,7 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
         label_visibility="collapsed",
     )
     fig = make_choropleth_map(map_df, metric)
-
+ 
     try:
         selection = st.plotly_chart(
             fig,
@@ -822,7 +874,7 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
     except TypeError:
         selection = None
         st.plotly_chart(fig, use_container_width=True)
-
+ 
     selected_region = None
     selection_payload = {}
     if selection:
@@ -834,7 +886,7 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
             selected_region = point["customdata"][0]
     if selected_region is None:
         selected_region = st.selectbox("Detalle territorial", map_df["region_map"].astype(str).tolist())
-
+ 
     st.session_state["mapa_departamentos_what_if"] = map_df[
         [
             "region_map",
@@ -850,7 +902,7 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
         ]
     ].copy()
     st.session_state["mapa_departamentos_prioritarios"] = map_df[map_df["alta_pendiente"]]["region_map"].astype(str).tolist()
-
+ 
     detail = locations.copy()
     detail["region_map"] = detail["region"].map(_clean_department)
     detail = detail[detail["region_map"].astype(str) == str(selected_region)]
@@ -874,16 +926,32 @@ def render_mapa(locations: pd.DataFrame, candidates: pd.DataFrame | None = None,
         st.dataframe(detail_table, use_container_width=True, hide_index=True)
     else:
         st.info("El dataset actual no incluye detalle de provincia o distrito para esta seleccion.")
-
+ 
     return map_df
-
-
-def page_resumen(candidates, locations, votes):
+ 
+ 
+def page_resumen(candidates, locations, votes, db_connected: bool = False):
     filtered_locations = apply_filters(locations)
     data = joined_results(candidates, filtered_locations, votes)
     summary = candidate_summary(data)
     metrics = general_metrics(filtered_locations, summary)
-
+ 
+    # Aviso de estado de datos -----------------------------------------------
+    if not db_connected:
+        db_error = st.session_state.get("db_conn_error", "")
+        msg = "⚠️ Mostrando **datos de demostración** (sin conexión a Supabase)."
+        if db_error:
+            msg += f" Error: `{db_error}`"
+        st.warning(msg)
+    else:
+        # Botón para refrescar manualmente los datos
+        col_ref, _ = st.columns([1, 4])
+        with col_ref:
+            if st.button("🔄 Actualizar datos", use_container_width=True):
+                st.session_state.pop("data_cache", None)
+                st.session_state.pop("data_cache_ts", None)
+                st.rerun()
+ 
     st.write("")
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
@@ -896,33 +964,55 @@ def page_resumen(candidates, locations, votes):
         metric_card("Estabilidad del resultado", f"{metrics['stability']:.0f}%", "Bajo riesgo de cambio", "✅")
     with c5:
         metric_card("Actas pendientes", format_int(metrics["pending"]), "Por contabilizar", "📄")
-
+ 
     st.write("")
     left, right = st.columns([2.2, 1])
     with left:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown("### Resultados por candidato")
         st.caption("Porcentaje de votos válidos")
-        st.plotly_chart(make_bar_chart(summary), use_container_width=True)
+        if summary.empty:
+            st.info("No hay resultados para los filtros seleccionados.")
+        else:
+            st.plotly_chart(make_bar_chart(summary), use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
+ 
     with right:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown("### Interpretación del conteo")
-        st.write("🗳️ El avance del conteo se concentra principalmente en zonas urbanas.")
-        st.write("⏳ Las regiones con menor velocidad pueden modificar la lectura del resultado parcial.")
+        if not summary.empty:
+            lider = summary.iloc[0]
+            segundo = summary.iloc[1] if len(summary) > 1 else None
+            st.markdown(
+                f"🏆 **{lider['candidate_name']}** ({lider['party_name']}) lidera "
+                f"con **{lider['percentage']:.1f}%**."
+            )
+            if segundo is not None:
+                diff = lider["percentage"] - segundo["percentage"]
+                st.markdown(
+                    f"📊 Diferencia con el 2.° lugar: **{diff:.1f} pp** "
+                    f"({segundo['candidate_name']})"
+                )
+            st.markdown(
+                f"📄 Actas contabilizadas: **{format_int(metrics['counted'])}** "
+                f"de {format_int(metrics['total_actas'])} ({metrics['progress']:.1f}%)"
+            )
+        st.divider()
+        st.write("⏳ Las regiones con menor velocidad pueden modificar la lectura parcial.")
         st.write("📍 El análisis geográfico ayuda a ubicar zonas con procesamiento lento.")
         st.write("🔎 El simulador permite evaluar escenarios sin usar inteligencia artificial.")
-        st.markdown("[Ver análisis detallado →](#)")
+        fuente = "Supabase PostgreSQL" if db_connected else "datos demo"
+        st.caption(f"Fuente: {fuente}")
         st.markdown("</div>", unsafe_allow_html=True)
-
+ 
     st.write("")
+    fuente_nota = "Supabase PostgreSQL (datos reales)" if db_connected else "dataset público/simulado con estructura ONPE"
     st.markdown(
-        f"<div class='small-note'>Datos referenciales. Total de actas: <b>{format_int(metrics['total_actas'])}</b>. Fuente: dataset público/simulado con estructura ONPE.</div>",
+        f"<div class='small-note'>Total de actas: <b>{format_int(metrics['total_actas'])}</b>. Fuente: {fuente_nota}.</div>",
         unsafe_allow_html=True,
     )
-
-
+ 
+ 
 def page_resultados(candidates, locations, votes):
     # ======================================================
     # Estilos visuales propios del módulo de resultados
@@ -1063,7 +1153,7 @@ def page_resultados(candidates, locations, votes):
         """,
         unsafe_allow_html=True,
     )
-
+ 
     # ======================================================
     # Cabecera visual
     # ======================================================
@@ -1077,81 +1167,81 @@ def page_resultados(candidates, locations, votes):
         """,
         unsafe_allow_html=True,
     )
-
+ 
     # ======================================================
     # Filtros
     # ======================================================
     with st.container(border=True):
         st.markdown("### Filtros de consulta")
         st.caption("Selecciona una zona para recalcular votos, ranking, avance de actas y descarga.")
-
+ 
         f1, f2, f3 = st.columns(3)
-
+ 
         with f1:
             regiones = ["Todas"] + sorted(locations["region"].dropna().unique().tolist())
             region_seleccionada = st.selectbox("Región", regiones, key="res_region")
-
+ 
         base_provincia = locations.copy()
         if region_seleccionada != "Todas":
             base_provincia = base_provincia[base_provincia["region"] == region_seleccionada]
-
+ 
         with f2:
             provincias = ["Todas"] + sorted(base_provincia["province"].dropna().unique().tolist())
             provincia_seleccionada = st.selectbox("Provincia", provincias, key="res_province")
-
+ 
         base_distrito = base_provincia.copy()
         if provincia_seleccionada != "Todas":
             base_distrito = base_distrito[base_distrito["province"] == provincia_seleccionada]
-
+ 
         with f3:
             distritos = ["Todos"] + sorted(base_distrito["district"].dropna().unique().tolist())
             distrito_seleccionado = st.selectbox("Distrito", distritos, key="res_district")
-
+ 
     # ======================================================
     # Aplicar filtros
     # ======================================================
     filtered_locations = locations.copy()
-
+ 
     if region_seleccionada != "Todas":
         filtered_locations = filtered_locations[filtered_locations["region"] == region_seleccionada]
-
+ 
     if provincia_seleccionada != "Todas":
         filtered_locations = filtered_locations[filtered_locations["province"] == provincia_seleccionada]
-
+ 
     if distrito_seleccionado != "Todos":
         filtered_locations = filtered_locations[filtered_locations["district"] == distrito_seleccionado]
-
+ 
     if filtered_locations.empty:
         st.warning("No hay información disponible para los filtros seleccionados.")
         return
-
+ 
     data = joined_results(candidates, filtered_locations, votes)
     summary = candidate_summary(data).reset_index(drop=True)
-
+ 
     if summary.empty:
         st.warning("No hay resultados electorales disponibles para esta consulta.")
         return
-
+ 
     summary.insert(0, "posicion", range(1, len(summary) + 1))
-
+ 
     # ======================================================
     # Cálculo de métricas principales
     # ======================================================
     total_votes = int(summary["valid_votes"].sum())
     total_actas = int(filtered_locations["total_actas"].sum())
     actas_contabilizadas = int(filtered_locations["actas_contabilizadas"].sum())
-
+ 
     if "actas_pendientes" in filtered_locations.columns:
         actas_pendientes = int(filtered_locations["actas_pendientes"].sum())
     else:
         actas_pendientes = max(total_actas - actas_contabilizadas, 0)
-
+ 
     avance_pct = (actas_contabilizadas / total_actas * 100) if total_actas > 0 else 0
-
+ 
     lider = summary.iloc[0]
     segundo = summary.iloc[1] if len(summary) > 1 else None
     diferencia = lider["percentage"] - segundo["percentage"] if segundo is not None else 0
-
+ 
     def res_metric(icon, title, value, help_text):
         st.markdown(
             f"""
@@ -1166,24 +1256,24 @@ def page_resultados(candidates, locations, votes):
             """,
             unsafe_allow_html=True,
         )
-
+ 
     st.write("")
     m1, m2, m3, m4 = st.columns(4)
-
+ 
     with m1:
         res_metric("🗳️", "Votos válidos", format_int(total_votes), "Total acumulado según filtros")
-
+ 
     with m2:
         res_metric("📄", "Actas contabilizadas", format_int(actas_contabilizadas), f"{avance_pct:.1f}% de avance")
-
+ 
     with m3:
         res_metric("🏆", "Líder actual", lider["party_name"], f"{lider['percentage']:.2f}% de votos válidos")
-
+ 
     with m4:
         res_metric("📊", "Diferencia 1.º vs 2.º", f"{diferencia:.2f} pp", "Puntos porcentuales")
-
+ 
     st.write("")
-
+ 
     # ======================================================
     # Lectura rápida
     # ======================================================
@@ -1199,20 +1289,20 @@ def page_resultados(candidates, locations, votes):
             f"Con los filtros aplicados, se registra información para <b>{lider['candidate_name']}</b> "
             f"con un avance de actas de <b>{avance_pct:.1f}%</b>."
         )
-
+ 
     st.markdown(f"<div class='insight-box'>{insight}</div>", unsafe_allow_html=True)
     st.progress(min(avance_pct / 100, 1.0), text=f"Avance de actas procesadas: {avance_pct:.1f}%")
-
+ 
     # ======================================================
     # Podio de candidatos
     # ======================================================
     st.write("")
     st.markdown("### Podio de resultados")
     st.caption("Primeras posiciones según la consulta seleccionada")
-
+ 
     podium_cols = st.columns(3)
     medals = ["🥇 Primer lugar", "🥈 Segundo lugar", "🥉 Tercer lugar"]
-
+ 
     for idx, col in enumerate(podium_cols):
         if idx < len(summary):
             row = summary.iloc[idx]
@@ -1228,13 +1318,13 @@ def page_resultados(candidates, locations, votes):
                     """,
                     unsafe_allow_html=True,
                 )
-
+ 
     # ======================================================
     # Gráfico y ranking
     # ======================================================
     st.write("")
     left, right = st.columns([1.35, 1])
-
+ 
     with left:
         with st.container(border=True):
             st.markdown('<div class="section-title">Distribución de votos</div>', unsafe_allow_html=True)
@@ -1242,10 +1332,10 @@ def page_resultados(candidates, locations, votes):
                 '<div class="section-subtitle">Votos válidos acumulados por organización política</div>',
                 unsafe_allow_html=True,
             )
-
+ 
             chart = summary.sort_values("valid_votes", ascending=True).copy()
             color_map = dict(zip(chart["party_name"], chart["display_color"]))
-
+ 
             fig = px.bar(
                 chart,
                 x="valid_votes",
@@ -1261,14 +1351,14 @@ def page_resultados(candidates, locations, votes):
                     "party_name": False,
                 },
             )
-
+ 
             fig.update_traces(
                 textposition="outside",
                 cliponaxis=False,
                 marker_line_width=0,
                 hovertemplate="<b>%{customdata[0]}</b><br>Votos: %{x:,}<br>Porcentaje: %{customdata[2]:.2f}%<extra></extra>",
             )
-
+ 
             fig.update_layout(
                 height=430,
                 showlegend=False,
@@ -1281,9 +1371,9 @@ def page_resultados(candidates, locations, votes):
                 xaxis=dict(showgrid=True, gridcolor="#E5E7EB"),
                 yaxis=dict(showgrid=False),
             )
-
+ 
             st.plotly_chart(fig, use_container_width=True)
-
+ 
     with right:
         with st.container(border=True):
             st.markdown('<div class="section-title">Ranking de candidatos</div>', unsafe_allow_html=True)
@@ -1291,11 +1381,11 @@ def page_resultados(candidates, locations, votes):
                 '<div class="section-subtitle">Ordenado de mayor a menor votación</div>',
                 unsafe_allow_html=True,
             )
-
+ 
             tabla = summary[
                 ["posicion", "candidate_name", "party_name", "valid_votes", "percentage"]
             ].copy()
-
+ 
             tabla = tabla.rename(
                 columns={
                     "posicion": "Puesto",
@@ -1305,7 +1395,7 @@ def page_resultados(candidates, locations, votes):
                     "percentage": "% votos",
                 }
             )
-
+ 
             st.dataframe(
                 tabla,
                 use_container_width=True,
@@ -1322,13 +1412,13 @@ def page_resultados(candidates, locations, votes):
                     ),
                 },
             )
-
+ 
     # ======================================================
     # Avance de actas y descarga
     # ======================================================
     st.write("")
     col_a, col_b = st.columns([1.2, 1])
-
+ 
     with col_a:
         with st.container(border=True):
             st.markdown('<div class="section-title">Avance de actas de la consulta</div>', unsafe_allow_html=True)
@@ -1336,17 +1426,17 @@ def page_resultados(candidates, locations, votes):
                 '<div class="section-subtitle">Detalle territorial usado para calcular los resultados</div>',
                 unsafe_allow_html=True,
             )
-
+ 
             avance_tabla = filtered_locations[
                 ["region", "province", "district", "total_actas", "actas_contabilizadas", "actas_pendientes"]
             ].copy()
-
+ 
             avance_tabla["% avance"] = np.where(
                 avance_tabla["total_actas"] > 0,
                 avance_tabla["actas_contabilizadas"] / avance_tabla["total_actas"] * 100,
                 0,
             )
-
+ 
             avance_tabla = avance_tabla.rename(
                 columns={
                     "region": "Región",
@@ -1357,7 +1447,7 @@ def page_resultados(candidates, locations, votes):
                     "actas_pendientes": "Pendientes",
                 }
             )
-
+ 
             st.dataframe(
                 avance_tabla,
                 use_container_width=True,
@@ -1375,7 +1465,7 @@ def page_resultados(candidates, locations, votes):
                     ),
                 },
             )
-
+ 
     with col_b:
         with st.container(border=True):
             st.markdown('<div class="section-title">Exportar resultados</div>', unsafe_allow_html=True)
@@ -1383,11 +1473,11 @@ def page_resultados(candidates, locations, votes):
                 '<div class="section-subtitle">Descarga la información filtrada para reportes o evidencias.</div>',
                 unsafe_allow_html=True,
             )
-
+ 
             exportar = summary[
                 ["posicion", "candidate_name", "party_name", "valid_votes", "percentage"]
             ].copy()
-
+ 
             exportar = exportar.rename(
                 columns={
                     "posicion": "puesto",
@@ -1397,7 +1487,7 @@ def page_resultados(candidates, locations, votes):
                     "percentage": "porcentaje",
                 }
             )
-
+ 
             st.download_button(
                 "⬇️ Descargar resultados en CSV",
                 exportar.to_csv(index=False).encode("utf-8"),
@@ -1405,7 +1495,7 @@ def page_resultados(candidates, locations, votes):
                 "text/csv",
                 use_container_width=True,
             )
-
+ 
             st.write("")
             st.markdown("#### Resumen de la consulta")
             st.markdown(
@@ -1416,22 +1506,22 @@ def page_resultados(candidates, locations, votes):
                 - **Avance:** {avance_pct:.1f}%
                 """
             )
-
-
+ 
+ 
 def page_mapa(locations, candidates, votes):
     st.markdown("## Analisis territorial del conteo")
     st.caption("Mapa coropletico de los 10 departamentos con mayor carga electoral")
-
+ 
     map_df = render_mapa(locations, candidates, votes)
     if map_df.empty:
         return
-
+ 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Avance promedio", f"{map_df['avance_pct'].mean():.1f}%")
     c2.metric("Velocidad total", f"{map_df['velocidad_actas_hora'].sum():,.0f}", "actas/hora")
     c3.metric("Bajo promedio", str(int(map_df["anomalia_score"].sum())))
     c4.metric("Alta pendiente", str(int(map_df["alta_pendiente"].sum())))
-
+ 
     left, right = st.columns([1.15, 1])
     with left:
         st.markdown("### Departamentos con menor rendimiento")
@@ -1445,7 +1535,7 @@ def page_mapa(locations, candidates, votes):
             ].sort_values(["brecha_avance", "pendiente_pct"], ascending=False)
             risk_table.columns = ["Departamento", "% avance", "Actas/hora", "% pendiente", "Brecha avance", "Estado"]
             st.dataframe(risk_table, use_container_width=True, hide_index=True)
-
+ 
     with right:
         st.markdown("### Insumos para simulacion")
         what_if = map_df[map_df["alta_pendiente"]].copy()
@@ -1456,20 +1546,20 @@ def page_mapa(locations, candidates, votes):
             what_if_table.columns = ["Departamento", "Actas pendientes", "% pendiente", "Actas/hora"]
             st.dataframe(what_if_table, use_container_width=True, hide_index=True)
     return
-
+ 
     data = joined_results(candidates, locations, votes)
     summary = candidate_summary(data)
     metrics = general_metrics(locations, summary)
-
+ 
     st.markdown("## Análisis por región")
     st.caption("Nivel de avance del conteo y velocidad de procesamiento")
-
+ 
     left, right = st.columns([2, 1])
     with left:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.plotly_chart(make_map(locations, metrics), use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
+ 
     with right:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown("### Nivel de avance")
@@ -1488,8 +1578,8 @@ def page_mapa(locations, candidates, votes):
             for _, row in critical.sort_values("retraso_estimado", ascending=False).iterrows():
                 st.write(f"**{row['region']}** — {row['retraso_estimado']:.0f}% bajo el promedio")
         st.markdown("</div>", unsafe_allow_html=True)
-
-
+ 
+ 
 def simulate_result(summary: pd.DataFrame, rural_intake: int, delay_hours: int) -> pd.DataFrame:
     simulated = summary.copy()
     # Ajuste determinístico: no es IA, solo fórmula de escenario.
@@ -1505,15 +1595,15 @@ def simulate_result(summary: pd.DataFrame, rural_intake: int, delay_hours: int) 
     total_votes = simulated["valid_votes"].sum()
     simulated["sim_votes"] = (adjusted * total_votes).round().astype(int)
     return simulated.sort_values("sim_percentage", ascending=False)
-
-
+ 
+ 
 def page_simulador(candidates, locations, votes):
     data = joined_results(candidates, locations, votes)
     summary = candidate_summary(data)
-
+ 
     st.markdown("## Simulador de escenarios")
     st.caption("Analiza cómo podrían cambiar los resultados según el ingreso de actas pendientes o rurales.")
-
+ 
     left, right = st.columns([1, 1.25])
     with left:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -1527,20 +1617,22 @@ def page_simulador(candidates, locations, votes):
         )
         rural_intake = st.slider("Porcentaje de actas rurales ingresadas", 0, 100, 50, 5)
         delay_hours = st.slider("Retraso en regiones críticas (horas)", 0, 24, 6, 1)
-
+ 
         run = st.button("▶ Ejecutar simulación", type="primary", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
+ 
     simulated = simulate_result(summary, rural_intake, delay_hours)
     current_leader = summary.iloc[0]
     simulated_leader = simulated.iloc[0]
     difference = simulated_leader["sim_percentage"] - current_leader["percentage"]
     confidence = max(55, min(95, 86 - abs(difference) * 4 - delay_hours * 0.4))
-
+ 
     if run:
         insert_log("Simulación", "Escenario ejecutado", f"{scenario}: rural={rural_intake}%, retraso={delay_hours}h")
-        st.cache_data.clear()
-
+        # Forzar recarga de datos en el siguiente ciclo
+        st.session_state.pop("data_cache", None)
+        st.session_state.pop("data_cache_ts", None)
+ 
     with right:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown("### Resultado de la simulación")
@@ -1549,7 +1641,7 @@ def page_simulador(candidates, locations, votes):
         m2.metric("Resultado simulado", f"{simulated_leader['sim_percentage']:.1f}%", simulated_leader["party_name"])
         m3.metric("Diferencia", f"{difference:+.1f}%", "Variación del líder")
         m4.metric("Nivel de confianza", f"{confidence:.0f}%", "Escenario")
-
+ 
         fig = px.bar(
             simulated,
             x="party_name",
@@ -1570,21 +1662,21 @@ def page_simulador(candidates, locations, votes):
         fig.update_traces(textposition="outside", cliponaxis=False)
         st.plotly_chart(fig, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
+ 
     st.write("")
     st.markdown(
         "<div class='small-note'>Nota: los resultados simulados son referenciales y se calculan mediante reglas de escenario, no mediante IA.</div>",
         unsafe_allow_html=True,
     )
-
-
+ 
+ 
 def page_reportes(candidates, locations, votes):
     st.markdown("## Reportes")
     st.caption("Exportación básica de resultados y avance de actas")
-
+ 
     data = joined_results(candidates, locations, votes)
     summary = candidate_summary(data)
-
+ 
     tab1, tab2, tab3 = st.tabs(["Resumen por candidato", "Avance geográfico", "Dataset completo"])
     with tab1:
         st.dataframe(summary, use_container_width=True, hide_index=True)
@@ -1610,31 +1702,31 @@ def page_reportes(candidates, locations, votes):
             "dataset_electoral.csv",
             "text/csv",
         )
-
-
+ 
+ 
 def page_logs(logs: pd.DataFrame):
     st.markdown("## Registro de eventos (Logs)")
     st.caption("Trazabilidad de procesos y acciones del sistema")
-
+ 
     table = logs.copy()
     if "event_time" in table.columns:
         table["event_time"] = pd.to_datetime(table["event_time"]).dt.strftime("%d/%m/%Y %I:%M:%S %p")
     table.columns = ["Fecha y hora", "Tipo", "Evento", "Detalle"]
     st.dataframe(table, use_container_width=True, hide_index=True)
-
-
+ 
+ 
 def page_acerca(db_connected: bool):
     st.markdown("## Acerca de Cloud Election Sentinel")
     st.write(
         "Esta base web replica una vista tipo ONPE para analizar el avance del conteo electoral. "
         "Está desarrollada únicamente con Python, Streamlit y Supabase/PostgreSQL."
     )
-
+ 
     c1, c2, c3 = st.columns(3)
     c1.info("**Frontend:** Streamlit")
     c2.info("**Base de datos:** Supabase PostgreSQL")
     c3.info("**Repositorio:** GitHub + rama de trabajo")
-
+ 
     st.markdown("### Flujo técnico")
     st.code(
         """
@@ -1644,14 +1736,14 @@ def page_acerca(db_connected: bool):
     )
     st.markdown("### Estado")
     st.success("Conexión activa a Supabase" if db_connected else "La app está usando datos demo hasta configurar Supabase")
-
-
+ 
+ 
 # ==========================================================
 # App principal
 # ==========================================================
 def main():
     candidates, locations, votes, logs, db_connected = load_data()
-
+ 
     with st.sidebar:
         st.markdown("## 🗳️ Cloud Election Sentinel")
         st.caption("Sistema analítico del conteo electoral")
@@ -1662,11 +1754,11 @@ def main():
         )
         st.divider()
         st.caption("Base web en Python · Streamlit · Supabase")
-
+ 
     render_header(db_connected)
-
+ 
     if option == "Resumen":
-        page_resumen(candidates, locations, votes)
+        page_resumen(candidates, locations, votes, db_connected)
     elif option == "Resultados":
         page_resultados(candidates, locations, votes)
     elif option == "Mapa":
@@ -1679,7 +1771,7 @@ def main():
         page_logs(logs)
     else:
         page_acerca(db_connected)
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
