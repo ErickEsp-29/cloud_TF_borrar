@@ -437,48 +437,54 @@ def resumen_insights(metrics: dict, summary: pd.DataFrame) -> list[str]:
 
     if metrics["progress"] < 35:
         insights.append(
-            "⏳ El avance de actas es bajo; el resultado parcial puede variar cuando se contabilice el resto."
+            f"⏳ Solo se ha contabilizado {metrics['progress']:.0f}% de las actas. El resultado parcial puede cambiar cuando se procesen las actas restantes."
         )
     elif metrics["progress"] < 75:
         insights.append(
-            "⏳ El conteo está en curso y aún puede modificarse según las actas pendientes."
+            f"⏳ Se ha procesado {metrics['progress']:.0f}% de las actas, con {format_int(metrics['pending'])} pendientes. El conteo aún está en desarrollo."
         )
     else:
         insights.append(
-            "⏳ El conteo está avanzado; el resultado parcial es más representativo del escenario actual."
+            f"⏳ El conteo está avanzado ({metrics['progress']:.0f}% de actas), por lo que el resultado parcial es más representativo."
         )
 
     if metrics["critical"] > 0:
         insights.append(
-            f"📍 Hay {metrics['critical']} región(es) con velocidad de procesamiento baja respecto al promedio."
+            f"📍 Hay {metrics['critical']} departamento(s) con velocidad de procesamiento baja respecto al promedio. Esos lugares pueden retrasar el cierre del conteo."
         )
     else:
         insights.append(
-            "📍 No hay regiones críticas por velocidad en el corte actual."
+            "📍 No se detectan departamentos con retraso crítico de procesamiento en el corte actual."
         )
 
     if len(summary) > 1:
-        leader_diff = float(summary.iloc[0]["percentage"] - summary.iloc[1]["percentage"])
+        leader = summary.iloc[0]
+        runner_up = summary.iloc[1]
+        leader_diff = float(leader["percentage"] - runner_up["percentage"])
         if leader_diff < 3:
             insights.append(
-                "🔎 La diferencia entre el primer y segundo lugar es estrecha; conviene seguir el avance de actas pendientes."
+                f"🔎 El margen entre {leader['candidate_name']} y {runner_up['candidate_name']} es de {leader_diff:.1f} puntos; la carrera sigue siendo cerrada."
+            )
+        elif leader_diff < 7:
+            insights.append(
+                f"🔎 {leader['candidate_name']} lidera por {leader_diff:.1f} puntos sobre {runner_up['candidate_name']}, una ventaja moderada."
             )
         else:
             insights.append(
-                "🔎 El margen actual es amplio y el líder parcial tiene una ventaja clara."
+                f"🔎 {leader['candidate_name']} mantiene una ventaja clara de {leader_diff:.1f} puntos sobre {runner_up['candidate_name']}."
             )
     else:
         insights.append(
-            "🔎 La información disponible es limitada para evaluar la competitividad entre candidatos."
+            "🔎 No hay suficiente información de candidatos para determinar la competitividad del resultado."
         )
 
-    if metrics["progress"] < 90 or metrics["critical"] > 0:
+    if metrics["progress"] < 90 or metrics["critical"] > 0 or metrics["pending"] > 0:
         insights.append(
-            "💡 Usa el simulador para explorar cómo las actas pendientes o los retrasos podrían cambiar el resultado."
+            "💡 Hay motivos para usar el simulador: permite ver cómo las actas pendientes y los retrasos podrían afectar el resultado."
         )
     else:
         insights.append(
-            "💡 El simulador sigue siendo útil para comparar escenarios aunque el conteo actual es estable."
+            "💡 El simulador ayuda a comparar escenarios aunque el conteo actual es relativamente estable."
         )
 
     return insights
